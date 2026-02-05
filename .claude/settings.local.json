@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:\\\\Users\\\\garyl\\\\onedrive\\\\documents\\\\github\\\\tiny-fortran\" branch -a)"
+    ]
+  }
+}

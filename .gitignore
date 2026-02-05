@@ -1,0 +1,6 @@
+tinyfortran
+build/ast.o
+build/interpreter.o
+build/lexer.o
+build/parser.o
+build/main.o

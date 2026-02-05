@@ -1,0 +1,16 @@
+INTEGER FUNCTION FIB(N)
+  INTEGER, INTENT(IN) :: N
+  IF (N <= 1) THEN
+    FIB = N
+  ELSE
+    FIB = FIB(N - 1) + FIB(N - 2)
+  END IF
+END FUNCTION FIB
+
+PROGRAM FIBONACCI
+  INTEGER :: I
+  PRINT *, "Fibonacci sequence:"
+  DO I = 0, 15
+    PRINT *, "F(", I, ") =", FIB(I)
+  END DO
+END PROGRAM FIBONACCI
