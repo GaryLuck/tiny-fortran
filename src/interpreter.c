@@ -10,7 +10,9 @@
 
 typedef struct {
     char *name;
-    int value;
+    int value;        /* scalar value */
+    int *array_data;  /* NULL for scalars, heap-allocated for arrays */
+    int array_size;   /* 0 for scalars, >0 for arrays */
 } Variable;
 
 typedef struct Scope {
@@ -36,6 +38,7 @@ static Scope *scope_new(Scope *parent) {
 static void scope_free(Scope *s) {
     for (int i = 0; i < s->nvars; i++) {
         free(s->vars[i].name);
+        free(s->vars[i].array_data);
     }
     free(s->vars);
     free(s);
@@ -70,6 +73,8 @@ static void scope_set(Scope *s, const char *name, int value) {
     }
     s->vars[s->nvars].name = my_strdup(name);
     s->vars[s->nvars].value = value;
+    s->vars[s->nvars].array_data = NULL;
+    s->vars[s->nvars].array_size = 0;
     s->nvars++;
 }
 
@@ -77,6 +82,19 @@ static void scope_declare(Scope *s, const char *name) {
     if (!scope_find_local(s, name)) {
         scope_set(s, name, 0);
     }
+}
+
+static void scope_declare_array(Scope *s, const char *name, int size) {
+    if (scope_find_local(s, name)) return;
+    if (s->nvars >= s->capacity) {
+        s->capacity = s->capacity == 0 ? 8 : s->capacity * 2;
+        s->vars = realloc(s->vars, (size_t)s->capacity * sizeof(Variable));
+    }
+    s->vars[s->nvars].name = my_strdup(name);
+    s->vars[s->nvars].value = 0;
+    s->vars[s->nvars].array_data = calloc((size_t)size, sizeof(int));
+    s->vars[s->nvars].array_size = size;
+    s->nvars++;
 }
 
 /* ── Function table ───────────────────────────────────────────── */
@@ -245,6 +263,24 @@ static int eval_expr(Interpreter *interp, ASTNode *node) {
             ASTNode **args = node->data.func_call.args;
             int nargs = node->data.func_call.nargs;
 
+            /* Check if this is an array element access */
+            {
+                Variable *av = scope_find(interp->current_scope, name);
+                if (av && av->array_data) {
+                    if (nargs != 1) {
+                        runtime_errorf(interp, node->line,
+                                       "Array '%s' requires exactly 1 index", name);
+                    }
+                    int idx = eval_expr(interp, args[0]);
+                    if (idx < 1 || idx > av->array_size) {
+                        runtime_errorf(interp, node->line,
+                                       "Array index %d out of bounds for '%s' (1..%d)",
+                                       idx, name, av->array_size);
+                    }
+                    return av->array_data[idx - 1];
+                }
+            }
+
             /* Try intrinsics first */
             int result;
             if (call_intrinsic(interp, name, args, nargs, node->line, &result)) {
@@ -321,22 +357,41 @@ static void exec_stmt(Interpreter *interp, ASTNode *node) {
 
     switch (node->type) {
         case NODE_DECL: {
-            /* Declare variables in current scope */
             for (int i = 0; i < node->data.decl.nnames; i++) {
-                scope_declare(interp->current_scope, node->data.decl.names[i]);
+                int sz = node->data.decl.sizes[i];
+                if (sz > 0) {
+                    scope_declare_array(interp->current_scope, node->data.decl.names[i], sz);
+                } else {
+                    scope_declare(interp->current_scope, node->data.decl.names[i]);
+                }
             }
             break;
         }
 
         case NODE_ASSIGN: {
             int value = eval_expr(interp, node->data.assign.value);
-            /* Find variable in scope chain - set in the scope where it's found,
-               or in current scope if not found */
-            Variable *v = scope_find(interp->current_scope, node->data.assign.target);
-            if (v) {
-                v->value = value;
+            if (node->data.assign.index) {
+                /* Array element assignment: ARR(idx) = value */
+                int idx = eval_expr(interp, node->data.assign.index);
+                Variable *v = scope_find(interp->current_scope, node->data.assign.target);
+                if (!v || !v->array_data) {
+                    runtime_errorf(interp, node->line,
+                                   "'%s' is not an array", node->data.assign.target);
+                }
+                if (idx < 1 || idx > v->array_size) {
+                    runtime_errorf(interp, node->line,
+                                   "Array index %d out of bounds for '%s' (1..%d)",
+                                   idx, node->data.assign.target, v->array_size);
+                }
+                v->array_data[idx - 1] = value;
             } else {
-                scope_set(interp->current_scope, node->data.assign.target, value);
+                /* Scalar assignment */
+                Variable *v = scope_find(interp->current_scope, node->data.assign.target);
+                if (v) {
+                    v->value = value;
+                } else {
+                    scope_set(interp->current_scope, node->data.assign.target, value);
+                }
             }
             break;
         }
@@ -430,11 +485,29 @@ static void exec_stmt(Interpreter *interp, ASTNode *node) {
                 if (scanf("%d", &val) != 1) {
                     runtime_error(interp, node->line, "Failed to read integer from input");
                 }
-                Variable *v = scope_find(interp->current_scope, node->data.read.vars[i]);
-                if (v) {
-                    v->value = val;
+                ASTNode *idx_node = node->data.read.indices ? node->data.read.indices[i] : NULL;
+                if (idx_node) {
+                    /* Array element: READ *, ARR(expr) */
+                    int idx = eval_expr(interp, idx_node);
+                    Variable *v = scope_find(interp->current_scope, node->data.read.vars[i]);
+                    if (!v || !v->array_data) {
+                        runtime_errorf(interp, node->line,
+                                       "'%s' is not an array", node->data.read.vars[i]);
+                    }
+                    if (idx < 1 || idx > v->array_size) {
+                        runtime_errorf(interp, node->line,
+                                       "Array index %d out of bounds for '%s' (1..%d)",
+                                       idx, node->data.read.vars[i], v->array_size);
+                    }
+                    v->array_data[idx - 1] = val;
                 } else {
-                    scope_set(interp->current_scope, node->data.read.vars[i], val);
+                    /* Scalar */
+                    Variable *v = scope_find(interp->current_scope, node->data.read.vars[i]);
+                    if (v) {
+                        v->value = val;
+                    } else {
+                        scope_set(interp->current_scope, node->data.read.vars[i], val);
+                    }
                 }
             }
             break;
@@ -457,14 +530,22 @@ static void exec_stmt(Interpreter *interp, ASTNode *node) {
                                name, nparams, nargs);
             }
 
-            /* Evaluate arguments */
+            /* Evaluate arguments and track writeback targets */
             int *arg_vals = malloc((size_t)nargs * sizeof(int));
-            /* Track which args are variable references for INOUT writeback */
             char **arg_var_names = calloc((size_t)nargs, sizeof(char*));
+            int *arg_arr_indices = calloc((size_t)nargs, sizeof(int)); /* 0 = not array */
             for (int i = 0; i < nargs; i++) {
                 arg_vals[i] = eval_expr(interp, args[i]);
                 if (args[i]->type == NODE_VAR_REF) {
                     arg_var_names[i] = args[i]->data.var_ref.name;
+                } else if (args[i]->type == NODE_FUNC_CALL && args[i]->data.func_call.nargs == 1) {
+                    /* Could be an array element: ARR(expr) */
+                    Variable *av = scope_find(interp->current_scope, args[i]->data.func_call.name);
+                    if (av && av->array_data) {
+                        arg_var_names[i] = args[i]->data.func_call.name;
+                        int idx = eval_expr(interp, args[i]->data.func_call.args[0]);
+                        arg_arr_indices[i] = idx; /* 1-based index, 0 means not array */
+                    }
                 }
             }
 
@@ -498,7 +579,15 @@ static void exec_stmt(Interpreter *interp, ASTNode *node) {
                     if (pv && arg_var_names[i]) {
                         Variable *cv = scope_find(caller_scope, arg_var_names[i]);
                         if (cv) {
-                            cv->value = pv->value;
+                            if (arg_arr_indices[i] > 0 && cv->array_data) {
+                                /* Write back to array element */
+                                int idx = arg_arr_indices[i];
+                                if (idx >= 1 && idx <= cv->array_size) {
+                                    cv->array_data[idx - 1] = pv->value;
+                                }
+                            } else {
+                                cv->value = pv->value;
+                            }
                         }
                     }
                 }
@@ -509,6 +598,7 @@ static void exec_stmt(Interpreter *interp, ASTNode *node) {
             scope_free(sub_scope);
             free(arg_vals);
             free(arg_var_names);
+            free(arg_arr_indices);
             break;
         }
 

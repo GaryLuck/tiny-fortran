@@ -423,23 +423,40 @@ static ASTNode *parse_read_stmt(Parser *p) {
 
     DynArray vars;
     da_init(&vars);
+    DynArray indices;
+    da_init(&indices);
 
     if (check(p, TOK_IDENT)) {
         char *name = my_strdup(p->cur.text);
         str_upper(name);
         da_push(&vars, name);
         next(p);
+        /* Check for array index: IDENT(expr) */
+        if (check(p, TOK_LPAREN)) {
+            next(p);
+            da_push(&indices, parse_expr(p));
+            expect(p, TOK_RPAREN);
+        } else {
+            da_push(&indices, NULL);
+        }
         while (match(p, TOK_COMMA)) {
             if (check(p, TOK_IDENT)) {
                 name = my_strdup(p->cur.text);
                 str_upper(name);
                 da_push(&vars, name);
                 next(p);
+                if (check(p, TOK_LPAREN)) {
+                    next(p);
+                    da_push(&indices, parse_expr(p));
+                    expect(p, TOK_RPAREN);
+                } else {
+                    da_push(&indices, NULL);
+                }
             }
         }
     }
 
-    return ast_read((char**)vars.items, vars.count, line);
+    return ast_read((char**)vars.items, (ASTNode**)indices.items, vars.count, line);
 }
 
 static ASTNode *parse_call_stmt(Parser *p) {
@@ -502,23 +519,58 @@ static ASTNode *parse_decl(Parser *p) {
 
     DynArray names;
     da_init(&names);
+    DynArray sizes_da;
+    da_init(&sizes_da);
 
     if (check(p, TOK_IDENT)) {
         char *name = my_strdup(p->cur.text);
         str_upper(name);
         da_push(&names, name);
         next(p);
+        /* Check for array size: IDENT(INT_LIT) */
+        int sz = 0;
+        if (check(p, TOK_LPAREN)) {
+            next(p);
+            if (check(p, TOK_INT_LIT)) {
+                sz = p->cur.int_value;
+                next(p);
+            } else {
+                parser_error(p, "Array size must be an integer literal");
+            }
+            expect(p, TOK_RPAREN);
+        }
+        da_push(&sizes_da, (void*)(long)sz);
+
         while (match(p, TOK_COMMA)) {
             if (check(p, TOK_IDENT)) {
                 name = my_strdup(p->cur.text);
                 str_upper(name);
                 da_push(&names, name);
                 next(p);
+                sz = 0;
+                if (check(p, TOK_LPAREN)) {
+                    next(p);
+                    if (check(p, TOK_INT_LIT)) {
+                        sz = p->cur.int_value;
+                        next(p);
+                    } else {
+                        parser_error(p, "Array size must be an integer literal");
+                    }
+                    expect(p, TOK_RPAREN);
+                }
+                da_push(&sizes_da, (void*)(long)sz);
             }
         }
     }
 
-    return ast_decl((char**)names.items, names.count, intent, line);
+    /* Convert sizes DynArray (void* holding ints) to int array */
+    int *sizes_arr = malloc((size_t)sizes_da.count * sizeof(int));
+    for (int i = 0; i < sizes_da.count; i++) {
+        sizes_arr[i] = (int)(long)sizes_da.items[i];
+    }
+    free(sizes_da.items);
+
+    return ast_decl((char**)names.items, names.count, intent, sizes_arr, line);
 }
 
 static ASTNode *parse_statement(Parser *p) {
@@ -578,21 +630,37 @@ static ASTNode *parse_statement(Parser *p) {
         return parse_decl(p);
     }
 
-    /* Assignment: IDENT = expr */
+    /* Assignment: IDENT = expr  or  IDENT(expr) = expr */
     if (check(p, TOK_IDENT)) {
         char *name = my_strdup(p->cur.text);
         str_upper(name);
         next(p);
 
+        /* Array element assignment: IDENT(expr) = expr */
+        if (check(p, TOK_LPAREN)) {
+            next(p);
+            ASTNode *index = parse_expr(p);
+            expect(p, TOK_RPAREN);
+            if (match(p, TOK_ASSIGN)) {
+                ASTNode *value = parse_expr(p);
+                ASTNode *n = ast_assign(name, index, value, line);
+                free(name);
+                return n;
+            }
+            parser_errorf(p, "Expected '=' after '%s(...)' for array assignment", name);
+            ast_free(index);
+            free(name);
+            return NULL;
+        }
+
+        /* Scalar assignment: IDENT = expr */
         if (match(p, TOK_ASSIGN)) {
             ASTNode *value = parse_expr(p);
-            ASTNode *n = ast_assign(name, value, line);
+            ASTNode *n = ast_assign(name, NULL, value, line);
             free(name);
             return n;
         }
 
-        /* Not an assignment — could be a function call used as statement (invalid in Fortran
-           but let's give a decent error). Roll back is complex, so just error. */
         parser_errorf(p, "Expected '=' after '%s' for assignment", name);
         free(name);
         return NULL;

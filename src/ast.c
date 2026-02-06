@@ -46,9 +46,10 @@ ASTNode *ast_sub_def(const char *name, ParamDef *params, int nparams,
     return n;
 }
 
-ASTNode *ast_assign(const char *target, ASTNode *value, int line) {
+ASTNode *ast_assign(const char *target, ASTNode *index, ASTNode *value, int line) {
     ASTNode *n = alloc_node(NODE_ASSIGN, line);
     n->data.assign.target = str_dup(target);
+    n->data.assign.index = index;  /* NULL for scalar */
     n->data.assign.value = value;
     return n;
 }
@@ -90,10 +91,11 @@ ASTNode *ast_print(ASTNode **items, int nitems, int line) {
     return n;
 }
 
-ASTNode *ast_read(char **vars, int nvars, int line) {
+ASTNode *ast_read(char **vars, ASTNode **indices, int nvars, int line) {
     ASTNode *n = alloc_node(NODE_READ, line);
     n->data.read.vars = vars;
     n->data.read.nvars = nvars;
+    n->data.read.indices = indices;  /* parallel array, NULL entries for scalars */
     return n;
 }
 
@@ -121,11 +123,12 @@ ASTNode *ast_cycle(int line) {
     return alloc_node(NODE_CYCLE, line);
 }
 
-ASTNode *ast_decl(char **names, int nnames, IntentType intent, int line) {
+ASTNode *ast_decl(char **names, int nnames, IntentType intent, int *sizes, int line) {
     ASTNode *n = alloc_node(NODE_DECL, line);
     n->data.decl.names = names;
     n->data.decl.nnames = nnames;
     n->data.decl.intent = intent;
+    n->data.decl.sizes = sizes;  /* parallel array: 0=scalar, >0=array size */
     return n;
 }
 
@@ -210,6 +213,7 @@ void ast_free(ASTNode *node) {
 
         case NODE_ASSIGN:
             free(node->data.assign.target);
+            ast_free(node->data.assign.index);
             ast_free(node->data.assign.value);
             break;
 
@@ -245,9 +249,13 @@ void ast_free(ASTNode *node) {
             break;
 
         case NODE_READ:
-            for (int i = 0; i < node->data.read.nvars; i++)
+            for (int i = 0; i < node->data.read.nvars; i++) {
                 free(node->data.read.vars[i]);
+                if (node->data.read.indices)
+                    ast_free(node->data.read.indices[i]);
+            }
             free(node->data.read.vars);
+            free(node->data.read.indices);
             break;
 
         case NODE_CALL:
@@ -261,6 +269,7 @@ void ast_free(ASTNode *node) {
             for (int i = 0; i < node->data.decl.nnames; i++)
                 free(node->data.decl.names[i]);
             free(node->data.decl.names);
+            free(node->data.decl.sizes);
             break;
 
         case NODE_STR_LIT:

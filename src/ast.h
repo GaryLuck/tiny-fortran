@@ -74,8 +74,8 @@ struct ASTNode {
             ASTNode **body; int nbody;
         } sub_def;
 
-        /* NODE_ASSIGN: target = value */
-        struct { char *target; ASTNode *value; } assign;
+        /* NODE_ASSIGN: target[(index)] = value */
+        struct { char *target; ASTNode *value; ASTNode *index; } assign;
 
         /* NODE_IF */
         struct {
@@ -100,14 +100,14 @@ struct ASTNode {
         /* NODE_PRINT: PRINT *, items */
         struct { ASTNode **items; int nitems; } print;
 
-        /* NODE_READ: READ *, vars */
-        struct { char **vars; int nvars; } read;
+        /* NODE_READ: READ *, vars — indices[i] non-NULL for array element */
+        struct { char **vars; int nvars; ASTNode **indices; } read;
 
         /* NODE_CALL: CALL sub(args) */
         struct { char *name; ASTNode **args; int nargs; } call;
 
-        /* NODE_DECL: INTEGER [, INTENT(x)] :: var1, var2 */
-        struct { char **names; int nnames; IntentType intent; } decl;
+        /* NODE_DECL: INTEGER [, INTENT(x)] :: var1, var2, arr(10) */
+        struct { char **names; int nnames; IntentType intent; int *sizes; } decl;
 
         /* NODE_INT_LIT */
         struct { int value; } int_lit;
@@ -138,20 +138,20 @@ ASTNode *ast_func_def(const char *name, ParamDef *params, int nparams,
                       ASTNode **body, int nbody, int line);
 ASTNode *ast_sub_def(const char *name, ParamDef *params, int nparams,
                      ASTNode **body, int nbody, int line);
-ASTNode *ast_assign(const char *target, ASTNode *value, int line);
+ASTNode *ast_assign(const char *target, ASTNode *index, ASTNode *value, int line);
 ASTNode *ast_if(ASTNode *cond, ASTNode **then_body, int nthen,
                 ASTNode *else_branch, int line);
 ASTNode *ast_do_loop(const char *var, ASTNode *start, ASTNode *end,
                      ASTNode *step, ASTNode **body, int nbody, int line);
 ASTNode *ast_do_while(ASTNode *cond, ASTNode **body, int nbody, int line);
 ASTNode *ast_print(ASTNode **items, int nitems, int line);
-ASTNode *ast_read(char **vars, int nvars, int line);
+ASTNode *ast_read(char **vars, ASTNode **indices, int nvars, int line);
 ASTNode *ast_call(const char *name, ASTNode **args, int nargs, int line);
 ASTNode *ast_return(int line);
 ASTNode *ast_stop(int line);
 ASTNode *ast_exit(int line);
 ASTNode *ast_cycle(int line);
-ASTNode *ast_decl(char **names, int nnames, IntentType intent, int line);
+ASTNode *ast_decl(char **names, int nnames, IntentType intent, int *sizes, int line);
 ASTNode *ast_int_lit(int value, int line);
 ASTNode *ast_str_lit(const char *value, int line);
 ASTNode *ast_var_ref(const char *name, int line);
